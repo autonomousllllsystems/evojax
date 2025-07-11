@@ -5,5 +5,5 @@ pip install evojax pyyaml
 pip install -U "jax[cuda12]"
 # pip install -U "jax[tpu]"
 
-
 # pip install "jax[cuda11_pip]==0.4.23" optax -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+
