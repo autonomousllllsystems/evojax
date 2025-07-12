@@ -112,7 +112,6 @@ class Trainer(object):
 
     def run(self, demo_mode: bool = False) -> float:
         """Start the training / test process."""
-
         if self.model_dir is not None:
             params, obs_params = load_model(model_dir=self.model_dir)
             self.sim_mgr.obs_params = obs_params

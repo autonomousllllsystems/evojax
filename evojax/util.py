@@ -83,6 +83,8 @@ def load_model(model_dir: str) -> Tuple[np.ndarray, np.ndarray]:
     """
 
     model_file = os.path.join(model_dir, 'model.npz')
+    # model_file = os.path.join(model_dir, 'best.npz')
+
     if not os.path.exists(model_file):
         raise ValueError('Model file {} does not exist.')
     with np.load(model_file) as data:

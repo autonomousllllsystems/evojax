@@ -71,15 +71,23 @@ def parse_args():
     parser.add_argument(
         '--gpu-id', type=str, help='GPU(s) to use.')
     parser.add_argument(
+        '--resume', type=str, default="", help='.')
+    parser.add_argument(
         '--debug', action='store_true', help='Debug mode.')
     config, _ = parser.parse_known_args()
     return config
 
 
 def main(config):
+    load_checkpoint = False
     log_dir = './log/slimevolley'
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)
+    else:
+        load_checkpoint = True
+    # load_checkpoint = False
+    
+    
     logger = util.create_logger(
         name='SlimeVolley', log_dir=log_dir, debug=config.debug)
     logger.info('EvoJAX SlimeVolley')
@@ -90,7 +98,7 @@ def main(config):
     test_task = SlimeVolley(test=True, max_steps=max_steps)
     policy = MLPPolicy(
         input_dim=train_task.obs_shape[0],
-        hidden_dims=[config.hidden_size, ],
+        hidden_dims=[config.hidden_size],
         output_dim=train_task.act_shape[0],
         output_act_fn='tanh',
     )
@@ -103,6 +111,7 @@ def main(config):
     )
     # Train.
     trainer = Trainer(
+        model_dir=log_dir if load_checkpoint else None,
         policy=policy,
         solver=solver,
         train_task=train_task,
@@ -116,13 +125,15 @@ def main(config):
         log_dir=log_dir,
         logger=logger,
     )
-    trainer.run(demo_mode=False)
+    if not load_checkpoint:
+        breakpoint()
+        trainer.run(demo_mode=False)
 
-    # Test the final model.
-    src_file = os.path.join(log_dir, 'best.npz')
-    tar_file = os.path.join(log_dir, 'model.npz')
-    shutil.copy(src_file, tar_file)
-    trainer.model_dir = log_dir
+        # Test the final model.
+        src_file = os.path.join(log_dir, 'best.npz')
+        tar_file = os.path.join(log_dir, 'model.npz')
+        shutil.copy(src_file, tar_file)
+        trainer.model_dir = log_dir
     trainer.run(demo_mode=True)
 
     # Visualize the policy.
