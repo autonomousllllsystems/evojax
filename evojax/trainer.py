@@ -146,6 +146,16 @@ class Trainer(object):
                 params = self.solver.ask()
                 self._logger.debug('solver.ask time: {0:.4f}s'.format(
                     time.perf_counter() - start_time))
+                
+                if i == 0:
+                    print("------------------------------init params ------------------------------")
+                    save_model(
+                        model_dir=self._log_dir,
+                        model_name='init',
+                        params=params,
+                        obs_params=self.sim_mgr.obs_params,
+                        best=False,
+                    )
 
                 start_time = time.perf_counter()
                 scores, bds = self.sim_mgr.eval_params(

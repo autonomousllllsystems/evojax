@@ -47,6 +47,263 @@ from evojax.algo import CMA
 from evojax import Trainer
 from evojax import util
 
+import copy
+import jax.numpy as jnp
+import numpy as np
+import matplotlib.pyplot as plt
+import networkx as nx
+
+
+def visualize_network(npz_file, save_pth=None):
+	"""
+	Load parameters from the saved npz file and visualize the MLP network structure.
+	The assumed architecture is: input layer (12 nodes), hidden layer (20 nodes), output layer (3 nodes).
+	We display each bias as a separate node.
+	
+	Args:
+		npz_file (str): Path to the npz file.
+		save_pth (str): Path to save the visualization image. If omitted, only display.
+	"""
+	# Load npz file
+	data = np.load(npz_file)
+	params = data["params"]
+	print(f"Loaded params shape: {params.shape}")
+	
+	# Define the MLPPolicy architecture
+	input_size = 12
+	hidden_size = 20
+	output_size = 3
+	
+	# Split up the parameters
+	offset = 0
+	# Weights from input to hidden layer (12*20 = 240)
+	breakpoint()
+	w1 = params[offset:offset + input_size * hidden_size].reshape(input_size, hidden_size)
+	offset += input_size * hidden_size
+	# Bias for hidden layer (20)
+	b1 = params[offset:offset + hidden_size]
+	offset += hidden_size
+	# Weights from hidden to output layer (20*3 = 60)
+	w2 = params[offset:offset + hidden_size * output_size].reshape(hidden_size, output_size)
+	offset += hidden_size * output_size
+	# Bias for output layer (3)
+	b2 = params[offset:offset + output_size]
+	offset += output_size
+	
+	# Create a directed graph with NetworkX
+	G = nx.DiGraph()
+	
+	# Node lists
+	input_nodes  = [f"I{i}" for i in range(input_size)]
+	hidden_nodes = [f"H{i}" for i in range(hidden_size)]
+	output_nodes = [f"O{i}" for i in range(output_size)]
+	
+	# Add bias nodes for hidden layer and output layer
+	bias_hidden = "B_hidden"
+	bias_output = "B_output"
+	
+	# Add nodes to the graph (with colors)
+	G.add_nodes_from(input_nodes, color="blue")
+	G.add_nodes_from(hidden_nodes, color="green")
+	G.add_nodes_from(output_nodes, color="red")
+	G.add_node(bias_hidden, color="purple")
+	G.add_node(bias_output, color="purple")
+	
+	# Add edges from input layer to hidden layer
+	for i, inp in enumerate(input_nodes):
+		for j, hid in enumerate(hidden_nodes):
+			weight = w1[i, j]
+			if abs(weight) > 0.01:
+				G.add_edge(inp, hid, weight=weight)
+	
+	# Add edges from hidden-layer bias to each hidden node
+	for i, hid in enumerate(hidden_nodes):
+		weight = b1[i]
+		if abs(weight) > 0.01:
+			G.add_edge(bias_hidden, hid, weight=weight)
+	
+	# Add edges from hidden layer to output layer
+	for i, hid in enumerate(hidden_nodes):
+		for j, out in enumerate(output_nodes):
+			weight = w2[i, j]
+			if abs(weight) > 0.01:
+				G.add_edge(hid, out, weight=weight)
+	
+	# Add edges from output-layer bias to each output node
+	for j, out in enumerate(output_nodes):
+		weight = b2[j]
+		if abs(weight) > 0.01:
+			G.add_edge(bias_output, out, weight=weight)
+	
+	# Retrieve node colors
+	colors = [G.nodes[n]["color"] for n in G.nodes]
+	
+	# Drawing settings
+	plt.figure(figsize=(12, 8))
+	pos = nx.spring_layout(G, seed=42)
+	nx.draw(G, pos, with_labels=True, node_color=colors, edge_color="gray", node_size=500)
+	edge_labels = {(u, v): f"{d['weight']:.2f}" for u, v, d in G.edges(data=True)}
+	nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels)
+	plt.title("Evolved NEAT MLP Network Visualization")
+	if save_pth is not None:
+		plt.savefig(save_pth)
+	plt.show()
+
+# -------------------------------
+# Simple NEAT Implementation (Hard-Coded)
+# -------------------------------
+# Here, we skip the complex node/connection representation of NEAT and treat each individual’s
+# genetic representation as a single weight vector (wVec).
+# Since the Trainer uses a fixed MLPPolicy (with a parameter count of 323),
+# the length of each individual's wVec is 323 (or hyp["ann_num_params"]).
+
+class Ind:
+	"""
+	Individual (Genome) class.
+	This class manages a weight vector (wVec) as the genetic representation of an individual in NEAT.
+	It also stores the fitness (fitness) and the generation of birth (birth).
+	"""
+	def __init__(self, wVec):
+		# wVec: a 1D array representing the parameters of the individual
+		self.wVec = np.copy(wVec)
+		self.fitness = 0.0
+		self.birth = 0
+
+	def mutate(self, p):
+		"""
+		Mutation process for an individual:
+		- For each element, add a perturbation based on a normal distribution with probability p['prob_mutConn'].
+		
+		Args:
+			p (dict): Hyperparameters for mutation rate and magnitude, etc.
+		"""
+		mutated = np.random.rand(self.wVec.shape[0]) < p['prob_mutConn']
+		delta = mutated * np.random.randn(self.wVec.shape[0]) * p['ann_mutSigma']
+		self.wVec += delta
+		return self
+
+	def crossover(self, mate):
+		"""
+		Crossover process:
+		- Randomly select parts of the two parents’ weight vectors to pass on to the child.
+		
+		Args:
+			mate (Ind): The individual to crossover with.
+		
+		Returns:
+			child (Ind): The newly created offspring.
+		"""
+		child = copy.deepcopy(self)
+		bProb = 0.5  # Probability of selecting genes from mate
+		mask = np.random.rand(self.wVec.shape[0]) < bProb
+		child.wVec[mask] = mate.wVec[mask]
+		return child
+
+class NEATJax:
+	"""
+	Simplified NEAT evolutionary algorithm class.
+	Trainer expects solver.ask() to return a JAX array (shape: (pop_size, param_size)),
+	so here we implement stacking of each individual's genetic representation (wVec) when returning it.
+	"""
+	def __init__(self, hyp):
+		"""
+		Constructor
+		
+		Args:
+			hyp (dict): A dictionary containing the hyperparameters of NEAT.
+		"""
+		self.p = hyp
+		self.pop_size = hyp['popSize']  # Define pop_size so that Trainer can reference it
+		self.pop = []         # Population (a list of Ind objects)
+		self.gen = 0          # Generation counter
+		self.best_ind = None  # The best individual so far
+
+	def initPop(self):
+		"""
+		Generate the initial population:
+		Create a random weight vector for each individual according to the fixed parameter count (ann_num_params).
+		"""
+		nParams = self.p.get("ann_num_params", 323)
+		# Generate initial weights with uniform random distribution (range: -ann_absWCap to ann_absWCap)
+		wVec = np.random.uniform(-self.p["ann_absWCap"], self.p["ann_absWCap"], size=nParams)
+		self.pop = []
+		for i in range(self.p['popSize']):
+			ind = Ind(wVec)
+			self.pop.append(copy.deepcopy(ind))
+		self.best_ind = self.pop[0]
+
+	def ask(self):
+		"""
+		Generate the next generation of the population and return it as a JAX array for the Trainer.
+		For the first time, it creates the initial population;
+		afterwards, it generates the new generation via elitism, crossover, and mutation.
+		
+		Returns:
+			A JAX array (shape: (pop_size, param_size)) of stacked weight vectors from all individuals.
+		"""
+		if len(self.pop) == 0:
+			self.initPop()
+		else:
+			# Sort in descending order of fitness
+			self.pop.sort(key=lambda ind: ind.fitness, reverse=True)
+			elite = self.pop[:max(1, int(0.1 * len(self.pop)))]
+			new_pop = []
+			while len(new_pop) < len(self.pop):
+				parent1 = np.random.choice(elite)
+				parent2 = np.random.choice(elite)
+				if np.random.rand() < self.p['prob_crossover']:
+					child = parent1.crossover(parent2)
+				else:
+					child = copy.deepcopy(parent1)
+				child.mutate(self.p)
+				new_pop.append(child)
+			self.pop = new_pop
+			self.gen += 1
+		# Stack each individual's wVec and return as a JAX array
+		params_list = [ind.wVec for ind in self.pop]
+		return jnp.array(np.stack(params_list, axis=0))
+
+	def tell(self, fitness):
+		"""
+		Update the fitness of each individual and track the best individual.
+		
+		Args:
+			fitness (list or array): Fitness for each individual.
+		"""
+		for i, ind in enumerate(self.pop):
+			ind.fitness = fitness[i]
+			if ind.fitness > self.best_ind.fitness:
+				self.best_ind = ind
+
+	@property
+	def best_params(self):
+		"""
+		Return the weight vector (as a JAX array) of the best individual for the Trainer.
+		"""
+		return jnp.array(self.best_ind.wVec)
+
+	@best_params.setter
+	def best_params(self, params):
+		pass
+
+# -------------------------------
+# Hyperparameters (hyp)
+# -------------------------------
+# Various parameters controlling the behavior of the NEAT process
+hyp = {
+	"task": "slimevolley",
+	"popSize": 32,            # Population size
+	"ann_num_params": 323,    # Must match the policy parameter count
+	"ann_absWCap": 5.0,       # Absolute weight cap
+	"prob_initEnable": 1.0,   # Probability that a connection is enabled initially (always enabled here)
+	"prob_mutConn": 0.8,      # Probability of mutating each weight
+	"ann_mutSigma": 0.1,      # Standard deviation of weight perturbation
+	"prob_addNode": 0.03,     # Probability of adding a new node (not implemented here)
+	"prob_addConn": 0.05,     # Probability of adding a new connection (not implemented here)
+	"prob_crossover": 0.8,    # Probability of crossover
+	"prob_enable": 0.01,      # Probability of enabling a connection (unused)
+}
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -73,6 +330,8 @@ def parse_args():
     parser.add_argument(
         '--resume', type=str, default="", help='.')
     parser.add_argument(
+        '--log_dir', type=str, default="./log/slimevolley", help='.')
+    parser.add_argument(
         '--debug', action='store_true', help='Debug mode.')
     config, _ = parser.parse_known_args()
     return config
@@ -80,14 +339,17 @@ def parse_args():
 
 def main(config):
     load_checkpoint = False
-    log_dir = './log/slimevolley'
+    log_dir = config.log_dir
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)
     else:
         load_checkpoint = True
-    # load_checkpoint = False
+    load_checkpoint = False
     
-    
+
+    visualize_network(os.path.join(log_dir, 'init.npz'), save_pth=os.path.join(log_dir,  'init.png'))
+
+
     logger = util.create_logger(
         name='SlimeVolley', log_dir=log_dir, debug=config.debug)
     logger.info('EvoJAX SlimeVolley')
@@ -96,19 +358,26 @@ def main(config):
     max_steps = 3000
     train_task = SlimeVolley(test=False, max_steps=max_steps)
     test_task = SlimeVolley(test=True, max_steps=max_steps)
+	
     policy = MLPPolicy(
         input_dim=train_task.obs_shape[0],
         hidden_dims=[config.hidden_size],
         output_dim=train_task.act_shape[0],
         output_act_fn='tanh',
     )
-    solver = CMA(
-        pop_size=config.pop_size,
-        param_size=policy.num_params,
-        init_stdev=config.init_std,
-        seed=config.seed,
-        logger=logger,
-    )
+    # breakpoint()
+    policy.get_model() # .save(os.path.join(log_dir, 'init_model.npz'))
+
+    # solver = CMA(
+    #     pop_size=config.pop_size,
+    #     param_size=policy.num_params,
+    #     init_stdev=config.init_std,
+    #     seed=config.seed,
+    #     logger=logger,
+    # )
+	
+    solver = NEATJax(hyp)
+
     # Train.
     trainer = Trainer(
         model_dir=log_dir if load_checkpoint else None,
@@ -126,7 +395,7 @@ def main(config):
         logger=logger,
     )
     if not load_checkpoint:
-        breakpoint()
+        # breakpoint()
         trainer.run(demo_mode=False)
 
         # Test the final model.
@@ -156,7 +425,9 @@ def main(config):
     screens[0].save(gif_file, save_all=True, append_images=screens[1:],
                     duration=40, loop=0)
     logger.info('GIF saved to {}.'.format(gif_file))
-
+	
+    visualize_network(os.path.join(log_dir, 'init.npz'), save_pth=os.path.join(log_dir,  'init.png'))
+    visualize_network(os.path.join(log_dir, 'model.npz'), save_pth=os.path.join(log_dir, 'trained.png'))
 
 if __name__ == '__main__':
     configs = parse_args()

@@ -64,6 +64,7 @@ class MLPPolicy(PolicyNetwork):
 
         model = MLP(
             feat_dims=hidden_dims, out_dim=output_dim, out_fn=output_act_fn)
+        self.model = model
         params = model.init(random.PRNGKey(0), jnp.ones([1, input_dim]))
         self.num_params, format_params_fn = get_params_format_fn(params)
         self._logger.info('MLPPolicy.num_params = {}'.format(self.num_params))
@@ -76,3 +77,6 @@ class MLPPolicy(PolicyNetwork):
                     p_states: PolicyState) -> Tuple[jnp.ndarray, PolicyState]:
         params = self._format_params_fn(params)
         return self._forward_fn(params, t_states.obs), p_states
+    
+    def get_model(self):
+        return self.model
